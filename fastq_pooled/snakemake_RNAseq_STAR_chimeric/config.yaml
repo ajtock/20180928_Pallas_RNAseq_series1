@@ -1,0 +1,32 @@
+SAMPLES: ["wt_RNAseq_Rep1",
+          "hta6_RNAseq_Rep1",
+          "hta7_RNAseq_Rep1",
+          "cmt3_RNAseq_Rep1",
+          "hta6_hta7_RNAseq_Rep1",
+          "hta7_cmt3_RNAseq_Rep1",
+          "hta6_hta7_cmt3_RNAseq_Rep1"]
+THREADS: 48
+FILTER:
+  fastqc:
+      contaminants: "adapters/contaminants_list_fastqc.txt"
+  trimmomatic:
+      ILLUMINACLIP: "ILLUMINACLIP:adapters/cat_all_and_TruSeq_Single_Indexes.fa:2:30:10:1:true"
+      HEADCROP: "HEADCROP:12"
+      CROP: "CROP:60"
+      SLIDINGWINDOW: "SLIDINGWINDOW:4:15"
+      LEADING: "LEADING:3"
+      TRAILING: "TRAILING:3"
+      MINLEN: "MINLEN:36"
+MAPPING:
+      reference: "data/index/TAIR10_chr_all"
+      alignments: 10 # STAR option --outFilterMultimapNmax
+      mismatches: 2  # STAR option --outFilterMismatchNmax
+      MAPQboth: 3
+      MAPQunique: 255
+      sortMemory: "5G"
+COVERAGE:
+      normalizeUsing: "BPM"
+      ignoreForNormalization: "mitochondria chloroplast" # Reference genome-specific parameter
+      binSize: 1
+      genomeBinSize: 10000
+      genomeBinName: "10kb"

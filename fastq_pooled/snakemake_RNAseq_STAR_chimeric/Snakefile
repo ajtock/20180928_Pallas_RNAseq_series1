@@ -1,0 +1,329 @@
+# Snakemake workflow for mapping RNA-seq libraries to a reference genome,
+# including chimeric alignments
+
+# Chromosome sizes file below ("data/index/genome.fa.sizes") must exist
+# before running snakefile
+# e.g., in "data/index/" run:
+# samtools faidx genome.fa; cut -f1,2 genome.fa.fai > genome.fa.sizes
+
+# Usage (snakemake --cores should reflect available cores):
+# conda env create --file environment.yaml --name RNAseq_mapping
+# source activate RNAseq_mapping
+# snakemake -p --cores 48
+# conda deactivate
+
+import pandas as pd
+import os
+
+# To make the per_base_coverage rule work with a shell script invoked using the "shell" directive,
+# we need to determine the base path of Snakefile since we expect the scripts directory to be there as well
+SRCDIR = srcdir("")
+
+# Specify config file parameters
+configfile: "config.yaml"
+sample        = config["SAMPLES"]
+reference     = config["MAPPING"]["reference"]
+refbase       = os.path.basename(reference)
+genomeBinName = config["COVERAGE"]["genomeBinName"]
+
+# Determine bam index format (bai or csi) based on chromosome sizes
+# Genomes with chromosomes longer than ~500 Mb (e.g., in wheat) require a csi index
+# E.g., in axolotl: https://sourceforge.net/p/samtools/mailman/message/36249039/
+chrSizes = pd.read_table("data/index/" + refbase + ".fa.sizes",
+                         header = None)
+smallChrs = 0
+for x in chrSizes[1]:
+    if x < 5e+08:
+        smallChrs = smallChrs + 1
+
+if smallChrs < len(chrSizes[1]):
+    bamidx = "csi"
+else:
+    bamidx = "bai"
+
+# Specify the desired end target file(s)
+rule all:
+    input:
+        expand("mapped/{sample}_Aligned.out.bam",
+               sample = sample),
+        expand("mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.{bamidx}",
+               sample = sample,
+               refbase = refbase,
+               bamidx = bamidx),
+        expand("mapped/unique/bw/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bw",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bedgraph",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_binSize{genomeBinName}.bedgraph",
+               sample = sample,
+               refbase = refbase,
+               genomeBinName = genomeBinName),
+        expand("mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.{bamidx}",
+               sample = sample,
+               refbase = refbase,
+               bamidx = bamidx),
+        expand("mapped/both/bw/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bw",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bedgraph",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_binSize{genomeBinName}.bedgraph",
+               sample = sample,
+               refbase = refbase,
+               genomeBinName = genomeBinName),
+        expand("mapped/unique/pb/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.perbase",
+               sample = sample,
+               refbase = refbase),
+        expand("mapped/both/pb/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.perbase",
+               sample = sample,
+               refbase = refbase)
+
+# Align to the reference genome, including chimeric alignments
+rule STAR:
+    """Obtain unique and multiple alignments using STAR"""
+    input:
+        fastq1 = "data/trimmed/{sample}_R1_trimmed.fastq.gz",
+        fastq2 = "data/trimmed/{sample}_R2_trimmed.fastq.gz"
+    output:
+        protected("mapped/{sample}_Aligned.out.bam")
+    params:
+        alignments = config["MAPPING"]["alignments"],
+        mismatches = config["MAPPING"]["mismatches"],
+        outprefix  = "mapped/{sample}_"
+    threads: config["THREADS"]
+    log:
+        "logs/STAR/{sample}.log"
+    shell:
+        "(STAR --runThreadN {threads}"
+        "      --genomeDir data/index/"
+        "      --readFilesIn {input.fastq1} {input.fastq2}"
+        "      --readFilesCommand zcat"
+        "      --chimSegmentMin 12"
+        "      --chimJunctionOverhangMin 12"
+        "      --alignSJDBoverhangMin 10"
+        "      --alignMatesGapMax 1000000"
+        "      --alignIntronMax 1000000"
+        "      --chimSegmentReadGapMax 3"
+        "      --alignSJstitchMismatchNmax 5 -1 5 5" 
+        "      --outSAMstrandField intronMotif"
+        "      --chimOutJunctionFormat 1"
+        "      --chimOutType Junctions WithinBAM HardClip"
+        "      --outSAMtype BAM Unsorted"
+        "      --outFileNamePrefix {params.outprefix}"
+        "      --outFilterMultimapNmax {params.alignments}"
+        "      --outMultimapperOrder Random"
+        "      --outSAMattributes All"
+        "      --twopassMode Basic"
+        "      --twopass1readsN -1) &> {log}"
+
+# Extract unique and multiple chimeric alignments
+rule samtools:
+    """ Extract unique and multiple alignments using samtools"""
+    input:
+        "mapped/{sample}_Aligned.out.bam"
+    output:
+        both   = protected("mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam"),
+        unique = protected("mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam")
+    params:
+        sortMemory = config["MAPPING"]["sortMemory"],
+        MAPQboth  = config["MAPPING"]["MAPQboth"],
+        MAPQunique = config["MAPPING"]["MAPQunique"]
+    threads: config["THREADS"]
+    log:
+        both   = "logs/samtools/{sample}_mappedon_{refbase}_both_sort_chimeric.log",
+        unique = "logs/samtools/{sample}_mappedon_{refbase}_unique_sort_chimeric.log"
+    shell:
+       # -f 2048 includes only supplementary alignments
+       # (i.e., alignment lines part of a chimeric alignment)
+       "(samtools view -uh -@ {threads} -f 2048 {input} -q {params.MAPQboth} "
+       "| samtools sort -@ {threads} -m {params.sortMemory} -o {output.both}) &> {log.both}; "
+       "(samtools view -uh -@ {threads} -f 2048 {input} -q {params.MAPQunique} "
+       "| samtools sort -@ {threads} -m {params.sortMemory} -o {output.unique}) &> {log.unique}"
+
+# Postmapping steps:
+# Index BAM files (index format [bai or csi] depends on chromosome sizes)
+# Generate samtools flagstat and idxstats
+# Calculate library-size-normalised coverage
+if bamidx == "bai":
+    rule postmapping:
+        """bam.bai samtools flagstat idxstats"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam"
+        output:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.{bamidx}",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.{bamidx}"
+        log:
+            uniqueflagstat = "logs/samtools/stats/{sample}_MappedOn_{refbase}_unique_sort_chimeric_flagstat.log",
+            bothflagstat   = "logs/samtools/stats/{sample}_MappedOn_{refbase}_both_sort_chimeric_flagstat.log",
+            uniqueidxstats = "logs/samtools/stats/{sample}_MappedOn_{refbase}_unique_sort_chimeric_idxstats.log",
+            bothidxstats   = "logs/samtools/stats/{sample}_MappedOn_{refbase}_both_sort_chimeric_idxstats.log"
+        shell:
+            """
+            samtools index    {input.uniqueBAM}
+            samtools flagstat {input.uniqueBAM} > {log.uniqueflagstat}
+            samtools idxstats {input.uniqueBAM} > {log.uniqueidxstats}
+            samtools index    {input.bothBAM}
+            samtools flagstat {input.bothBAM} > {log.bothflagstat}
+            samtools idxstats {input.bothBAM} > {log.bothidxstats}
+            """
+    rule calc_coverage:
+        """Calculate library-size-normalized coverage"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam",
+            uniqueBAMidx = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.bai",
+            bothBAMidx   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.bai"
+        output:
+            uniqueBW = "mapped/unique/bw/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bw",
+            bothBW   = "mapped/both/bw/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bw",
+            uniqueBG = "mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bedgraph",
+            bothBG   = "mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bedgraph"
+        params:
+            normalizeUsing         = config["COVERAGE"]["normalizeUsing"],
+            binSize                = config["COVERAGE"]["binSize"]
+        log:
+            unique = "logs/bamCoverage/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.log",
+            both   = "logs/bamCoverage/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.log"
+        threads: config["THREADS"]  
+        shell:
+            "(bamCoverage -b {input.uniqueBAM} -o {output.uniqueBW}"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}; "
+            "bamCoverage -b {input.uniqueBAM} -o {output.uniqueBG} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}) &> {log.unique}; "
+            "(bamCoverage -b {input.bothBAM} -o {output.bothBW}"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}; "
+            "bamCoverage -b {input.bothBAM} -o {output.bothBG} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}) &> {log.both}"
+    rule calc_coverage_genome:
+        """Calculate library-size-normalized coverage in adjacent windows"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam",
+            uniqueBAMidx = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.bai",
+            bothBAMidx   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.bai"
+        output:
+            uniqueBGgenome = "mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_binSize{genomeBinName}.bedgraph",
+            bothBGgenome   = "mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_binSize{genomeBinName}.bedgraph"
+        params:
+            normalizeUsing         = config["COVERAGE"]["normalizeUsing"],
+            genomeBinSize          = config["COVERAGE"]["genomeBinSize"]
+        log:
+            unique = "logs/bamCoverage/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_binSize{genomeBinName}.log",
+            both   = "logs/bamCoverage/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_binSize{genomeBinName}.log"
+        threads: config["THREADS"]  
+        shell:
+            "(bamCoverage -b {input.uniqueBAM} -o {output.uniqueBGgenome} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.genomeBinSize} -p {threads}) &> {log.unique}; "
+            "(bamCoverage -b {input.bothBAM} -o {output.bothBGgenome} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.genomeBinSize} -p {threads}) &> {log.both}"
+else:
+    rule postmapping:
+        """bam.csi samtools flagstat idxstats"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam"
+        output:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.{bamidx}",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.{bamidx}"
+        log:
+            uniqueflagstat = "logs/samtools/stats/{sample}_MappedOn_{refbase}_unique_sort_chimeric_flagstat.log",
+            bothflagstat   = "logs/samtools/stats/{sample}_MappedOn_{refbase}_both_sort_chimeric_flagstat.log",
+            uniqueidxstats = "logs/samtools/stats/{sample}_MappedOn_{refbase}_unique_sort_chimeric_idxstats.log",
+            bothidxstats   = "logs/samtools/stats/{sample}_MappedOn_{refbase}_both_sort_chimeric_idxstats.log"
+        shell:
+            """
+            samtools index -c -m 14 {input.uniqueBAM}
+            samtools flagstat       {input.uniqueBAM} > {log.uniqueflagstat}
+            samtools idxstats       {input.uniqueBAM} > {log.uniqueidxstats}
+            samtools index -c -m 14 {input.bothBAM}
+            samtools flagstat       {input.bothBAM} > {log.bothflagstat}
+            samtools idxstats       {input.bothBAM} > {log.bothidxstats}
+            """
+    rule calc_coverage:
+        """Calculate library-size-normalized coverage"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam",
+            uniqueBAMidx = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.csi",
+            bothBAMidx   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.csi"
+        output:
+            uniqueBW = "mapped/unique/bw/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bw",
+            bothBW   = "mapped/both/bw/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bw",
+            uniqueBG = "mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bedgraph",
+            bothBG   = "mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bedgraph"
+        params:
+            normalizeUsing         = config["COVERAGE"]["normalizeUsing"],
+            binSize                = config["COVERAGE"]["binSize"]
+        log:
+            unique = "logs/bamCoverage/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.log",
+            both   = "logs/bamCoverage/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.log"
+        threads: config["THREADS"]  
+        shell:
+            "(bamCoverage -b {input.uniqueBAM} -o {output.uniqueBW}"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}; "
+            "bamCoverage -b {input.uniqueBAM} -o {output.uniqueBG} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}) &> {log.unique}; "
+            "(bamCoverage -b {input.bothBAM} -o {output.bothBW}"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}; "
+            "bamCoverage -b {input.bothBAM} -o {output.bothBG} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.binSize} -p {threads}) &> {log.both}"
+    rule calc_coverage_genome:
+        """Calculate library-size-normalized coverage in adjacent windows"""
+        input:
+            uniqueBAM = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam",
+            bothBAM   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam",
+            uniqueBAMidx = "mapped/unique/{sample}_MappedOn_{refbase}_unique_sort_chimeric.bam.csi",
+            bothBAMidx   = "mapped/both/{sample}_MappedOn_{refbase}_both_sort_chimeric.bam.csi"
+        output:
+            uniqueBGgenome = "mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_binSize{genomeBinName}.bedgraph",
+            bothBGgenome   = "mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_binSize{genomeBinName}.bedgraph"
+        params:
+            normalizeUsing         = config["COVERAGE"]["normalizeUsing"],
+            genomeBinSize          = config["COVERAGE"]["genomeBinSize"]
+        log:
+            unique = "logs/bamCoverage/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_binSize{genomeBinName}.log",
+            both   = "logs/bamCoverage/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_binSize{genomeBinName}.log"
+        threads: config["THREADS"]  
+        shell:
+            "(bamCoverage -b {input.uniqueBAM} -o {output.uniqueBGgenome} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.genomeBinSize} -p {threads}) &> {log.unique}; "
+            "(bamCoverage -b {input.bothBAM} -o {output.bothBGgenome} -of bedgraph"
+            " --normalizeUsing {params.normalizeUsing}"
+            " --binSize {params.genomeBinSize} -p {threads}) &> {log.both}"
+
+rule per_base_coverage:
+    """Convert bedgraph to per-base 1-based coverage file"""
+    input:
+        unique = "mapped/unique/bg/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.bedgraph",
+        both   = "mapped/both/bg/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.bedgraph"
+    output:
+        unique = "mapped/unique/pb/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm.perbase",
+        both   = "mapped/both/pb/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm.perbase"
+    log:
+        unique = "logs/perBaseCoverage/{sample}_MappedOn_{refbase}_unique_sort_chimeric_norm_pb.log",
+        both   = "logs/perBaseCoverage/{sample}_MappedOn_{refbase}_both_sort_chimeric_norm_pb.log"
+    shell:
+        "(bash {SRCDIR}/scripts/perbase_1based_coverage.sh {input.unique} {output.unique}) &> {log.unique}; "
+        "(bash {SRCDIR}/scripts/perbase_1based_coverage.sh {input.both} {output.both}) &> {log.both}"
+
