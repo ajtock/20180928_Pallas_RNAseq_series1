@@ -11,15 +11,15 @@ FILTER:
       contaminants: "adapters/contaminants_list_fastqc.txt"
   trimmomatic:
       ILLUMINACLIP: "ILLUMINACLIP:adapters/cat_all_and_TruSeq_Single_Indexes.fa:2:30:10:1:true"
-      HEADCROP: "HEADCROP:12"
-      CROP: "CROP:60"
+      CROP: "CROP:72"
       SLIDINGWINDOW: "SLIDINGWINDOW:4:15"
       LEADING: "LEADING:3"
       TRAILING: "TRAILING:3"
       MINLEN: "MINLEN:36"
 MAPPING:
       reference: "data/index/TAIR10_chr_all"
-      alignments: 10 # STAR option --outFilterMultimapNmax
+      alignments: 100 # STAR option --outFilterMultimapNmax
+      anchor: 100 # STAR option --winAnchorMultimapNmax
       mismatches: 2  # STAR option --outFilterMismatchNmax
       MAPQboth: 3
       MAPQunique: 255

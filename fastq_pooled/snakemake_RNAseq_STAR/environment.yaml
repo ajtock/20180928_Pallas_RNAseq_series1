@@ -4,7 +4,7 @@ dependencies:
   - fastqc=0.11.8
   - bbmap=38.22
   - trimmomatic=0.38
-  - pigz==2.3.4
+  - pigz=2.3.4
   - STAR=2.7.0d
   - samtools=1.9
   - deeptools=3.1.3

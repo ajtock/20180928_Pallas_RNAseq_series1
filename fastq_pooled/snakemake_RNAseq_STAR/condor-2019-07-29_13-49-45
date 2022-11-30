@@ -1,0 +1,18 @@
+# pwd : /home/ajt200/analysis/20180928_Pallas_RNAseq_series1/fastq_pooled/snakemake_RNAseq_STAR
+
+Universe   = vanilla
+Executable = /bin/bash
+Transfer_executable = False
+should_transfer_files = NO
+Arguments = "/home/ajt200/analysis/20180928_Pallas_RNAseq_series1/fastq_pooled/snakemake_RNAseq_STAR/condor_submit.sh"
+Requirements = OpSys == "LINUX" && Arch == "X86_64"  && TARGET.FileSystemDomain == "plantsci.internal.cam.ac.uk"
+rank = -LoadAvg
+request_memory = 40000
+request_cpus = 48
+getenv = True
+Log = log-2019-07-29_13-49-45.txt
+Input = 
+Output = stdout-2019-07-29_13-49-45.txt
+Error = error-2019-07-29_13-49-45.txt
+Notification = never
+Queue

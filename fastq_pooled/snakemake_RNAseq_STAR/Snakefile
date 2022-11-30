@@ -145,7 +145,6 @@ rule trimmomatic:
     params:
         # List of trimming paramters (see Trimmomatic manual)
         trimmer = [str(config["FILTER"]["trimmomatic"]["ILLUMINACLIP"]),
-                   str(config["FILTER"]["trimmomatic"]["HEADCROP"]),
                    str(config["FILTER"]["trimmomatic"]["CROP"]),
                    str(config["FILTER"]["trimmomatic"]["SLIDINGWINDOW"]),
                    str(config["FILTER"]["trimmomatic"]["LEADING"]),
@@ -201,6 +200,7 @@ rule STAR:
         protected("mapped/{sample}_Aligned.out.bam")
     params:
         alignments = config["MAPPING"]["alignments"],
+        anchor     = config["MAPPING"]["anchor"],
         mismatches = config["MAPPING"]["mismatches"],
         outprefix  = "mapped/{sample}_"
     threads: config["THREADS"]
@@ -214,6 +214,7 @@ rule STAR:
         "      --outSAMtype BAM Unsorted"
         "      --outFileNamePrefix {params.outprefix}"
         "      --outFilterMultimapNmax {params.alignments}"
+        "      --winAnchorMultimapNmax {params.anchor}"
         "      --outMultimapperOrder Random"
         "      --outFilterMismatchNmax {params.mismatches}"
         "      --outSAMattributes All"
